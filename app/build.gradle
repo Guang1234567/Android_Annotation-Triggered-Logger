@@ -25,5 +25,8 @@ dependencies {
     compile 'com.android.support:appcompat-v7:25.0.1'
 
     compile project(':annotations')
-    apt project(':processor')
+
+    //apt project(':processor')
+    //or
+    compile project(':runtime')
 }
