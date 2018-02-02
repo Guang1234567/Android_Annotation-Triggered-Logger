@@ -13,5 +13,8 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 @Target({TYPE, METHOD, CONSTRUCTOR})
 @Retention(RUNTIME)
 public @interface Logged {
-    int value() default Log.VERBOSE;
+
+    int level() default Log.VERBOSE;
+
+    boolean printStack() default false;
 }

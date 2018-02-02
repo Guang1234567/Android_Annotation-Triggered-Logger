@@ -1,6 +1,8 @@
 package eu.f3rog.apt.runtime;
 
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Trace;
 import android.util.Log;
 
@@ -17,15 +19,17 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.util.concurrent.TimeUnit;
 
-import eu.f3rog.log.Logged;
+import eu.f3rog.log.MainThread;
+import eu.f3rog.log.UiThread;
+import eu.f3rog.log.WorkerThread;
 
 @Aspect
-public class LoggedAspectConfig {
+public class ThreadAspectConfig {
     private static volatile boolean sEnabled = true;
 
     private static volatile Loggable sLoggable = Loggable.DEFAULT_LOGGER;
 
-    @Pointcut("within(@eu.f3rog.log.Logged *)")
+    @Pointcut("within(@eu.f3rog.log.MainThread *) || within(@eu.f3rog.log.UiThread *)  || within(@eu.f3rog.log.WorkerThread *)")
     public void withinAnnotatedClass() {
     }
 
@@ -33,20 +37,12 @@ public class LoggedAspectConfig {
     public void methodInsideAnnotatedType() {
     }
 
-    @Pointcut("execution(!synthetic *.new(..)) && withinAnnotatedClass()")
-    public void constructorInsideAnnotatedType() {
-    }
-
-    @Pointcut("execution(@eu.f3rog.log.Logged * *(..)) || methodInsideAnnotatedType()")
+    @Pointcut("execution(@eu.f3rog.log.MainThread * *(..)) || execution(@eu.f3rog.log.UiThread * *(..)) || execution(@eu.f3rog.log.WorkerThread * *(..)) || methodInsideAnnotatedType()")
     public void method() {
     }
 
-    @Pointcut("execution(@eu.f3rog.log.Logged *.new(..)) || constructorInsideAnnotatedType()")
-    public void constructor() {
-    }
-
     public static void setEnabled(boolean enabled) {
-        LoggedAspectConfig.sEnabled = enabled;
+        ThreadAspectConfig.sEnabled = enabled;
     }
 
     public static void setLoggable(Loggable loggable) {
@@ -55,8 +51,59 @@ public class LoggedAspectConfig {
         }
     }
 
-    @Around("method() || constructor()")
-    public Object logAndExecute(ProceedingJoinPoint joinPoint) throws Throwable {
+    @Around("method()")
+    public Object logAndExecute(final ProceedingJoinPoint joinPoint) throws Throwable {
+        Annotation annotation = getMethodAnnotation(joinPoint, WorkerThread.class);
+        if (annotation == null) {
+            annotation = getMethodAnnotation(joinPoint, MainThread.class);
+        }
+        if (annotation == null) {
+            annotation = getMethodAnnotation(joinPoint, UiThread.class);
+        }
+
+        final Object[] result = new Object[1];
+        boolean isMainLooper = Looper.myLooper() == Looper.getMainLooper();
+        if (isMainLooper) {
+            if (WorkerThread.class.equals(annotation.annotationType())) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            result[0] = ThreadAspectConfig.this.run(joinPoint);
+                        } catch (Throwable e) {
+                            CodeSignature codeSignature = (CodeSignature) joinPoint.getSignature();
+                            Class<?> cls = codeSignature.getDeclaringType();
+                            sLoggable.w(asTag(cls), e);
+                        }
+                    }
+                }, "@eu.f3rog.log.WorkerThread")
+                        .start();
+            } else {
+                result[0] = run(joinPoint);
+            }
+        } else {
+            if (WorkerThread.class.equals(annotation.annotationType())) {
+                result[0] = run(joinPoint);
+            } else {
+                new Handler(Looper.getMainLooper()).post(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            result[0] = ThreadAspectConfig.this.run(joinPoint);
+                        } catch (Throwable e) {
+                            CodeSignature codeSignature = (CodeSignature) joinPoint.getSignature();
+                            Class<?> cls = codeSignature.getDeclaringType();
+                            sLoggable.w(asTag(cls), e);
+                        }
+                    }
+                });
+            }
+        }
+
+        return result[0];
+    }
+
+    private Object run(ProceedingJoinPoint joinPoint) throws Throwable {
         enterMethod(joinPoint);
 
         long startNanos = System.nanoTime();
@@ -65,7 +112,6 @@ public class LoggedAspectConfig {
         long lengthMillis = TimeUnit.NANOSECONDS.toMillis(stopNanos - startNanos);
 
         exitMethod(joinPoint, result, lengthMillis);
-
         return result;
     }
 
@@ -95,12 +141,14 @@ public class LoggedAspectConfig {
         }*/
         builder.append(" [Thread:\"").append(Thread.currentThread().getName()).append("\"]");
 
+        /*
         Logged annotation = getMethodAnnotation(joinPoint, Logged.class);
         if (annotation.printStack()) {
             logWithLevel(annotation.level(), asTag(cls), builder.toString(), new Exception());
         } else {
             logWithLevel(annotation.level(), asTag(cls), builder.toString());
         }
+        */
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
             final String section = builder.toString().substring(2);
@@ -133,8 +181,8 @@ public class LoggedAspectConfig {
             builder.append(Strings.toString(result));
         }
 
-        Logged annotation = getMethodAnnotation(joinPoint, Logged.class);
-        logWithLevel(annotation.level(), asTag(cls), builder.toString());
+        /*Logged annotation = getMethodAnnotation(joinPoint, Logged.class);
+        logWithLevel(annotation.level(), asTag(cls), builder.toString());*/
     }
 
     private static String asTag(Class<?> cls) {
